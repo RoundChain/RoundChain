@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RND节点程序：多节点集群（9753/9754端口) - 无算力+动态白名单+防篡改版"""
+"""RND节点程序：多节点集群（9755、9756端口) - 无算力+动态白名单+防篡改版"""
 import json
 import time
 import hashlib
