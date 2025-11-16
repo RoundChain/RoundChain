@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RND节点程序：多节点集群（9755/9756端口) - 无算力+动态白名单+防篡改版"""
+"""RND节点程序：多节点集群（9753/9754端口) - 无算力+动态白名单+防篡改版"""
 import json
 import time
 import hashlib
@@ -19,14 +19,14 @@ import socket
 import atexit
 
 # ---------- 节点核心配置 ----------
-PORT = 9756  # 主服务端口
+PORT = 9756 # 主服务端口
 DB_FILE = "node.db"  # 全量存储数据库
 REWARD = 1280
 TOTAL_SUPPLY_LIMIT = 12800000000
 FEE = 1
 TIMEOUT = 180
 SYNC_INTERVAL = 10
-P2P_DISCOVERY_PORT = 9755 # P2P端口
+P2P_DISCOVERY_PORT = 9755  # P2P端口
 TX_SYNC_INTERVAL = 10
 WALLET_DIR = "./rnd_wallet"  # 独立钱包目录
 ENCRYPT_KEY_FILE = f"{WALLET_DIR}/encrypt_key.key"
@@ -427,7 +427,7 @@ def verify_local_chain_integrity():
 
 # ---------- 白名单管理函数（核心新增） ----------
 def request_whitelist_join(node_addr: str):
-    """节点申请加入白名单"""
+    """节点申请加入白名单（新增初始节点豁免）"""
     if node_addr in AUTHENTICATED_NODES:
         log_print(f"[白名单] 节点{node_addr[:8]}... 已在白名单中")
         return True
@@ -435,7 +435,16 @@ def request_whitelist_join(node_addr: str):
         if node_addr not in NODE_WHITELIST_REQUESTS:
             NODE_WHITELIST_REQUESTS[node_addr] = {}
         NODE_WHITELIST_REQUESTS[node_addr][NODE_ADDR] = time.time()
-    # 向所有已认证节点广播加入请求
+    
+    # 新增：初始节点豁免逻辑（无其他认证节点时直接加入）
+    with IP_BIND_LOCK:
+        if len(AUTHENTICATED_NODES) == 0:
+            AUTHENTICATED_NODES.add(node_addr)
+            del NODE_WHITELIST_REQUESTS[node_addr]
+            log_print(f"[白名单] 无已认证节点，初始节点{node_addr[:8]}... 直接加入")
+            return True
+    
+    # 原有：向其他已认证节点广播请求（初始节点时此部分不执行）
     for peer_addr in AUTHENTICATED_NODES:
         if peer_addr == NODE_ADDR:
             continue
@@ -488,14 +497,20 @@ def broadcast_whitelist_update():
             log_print(f"[白名单] 向节点{peer_addr[:8]}... 广播更新失败：{e}")
 
 def sync_whitelist(remote_authenticated_nodes: list):
-    """同步其他节点的白名单"""
+    """同步远程白名单（完整覆盖，不丢失节点）"""
     with IP_BIND_LOCK:
-        local_count = len(AUTHENTICATED_NODES)
-        remote_count = len(remote_authenticated_nodes)
-        if remote_count > local_count and all(is_valid_address(node) for node in remote_authenticated_nodes):
-            AUTHENTICATED_NODES.clear()
-            AUTHENTICATED_NODES.update(remote_authenticated_nodes)
-            log_print(f"[白名单] 同步远程白名单，当前合法节点数：{len(AUTHENTICATED_NODES)}")
+        # 过滤无效地址，避免脏数据
+        valid_remote_nodes = [node for node in remote_authenticated_nodes if is_valid_address(node)]
+        if not valid_remote_nodes:
+            return
+        # 合并远程白名单到本地（不清除本地已有，避免覆盖自身）
+        original_count = len(AUTHENTICATED_NODES)
+        AUTHENTICATED_NODES.update(valid_remote_nodes)
+        new_count = len(AUTHENTICATED_NODES)
+        if new_count > original_count:
+            added_nodes = new_count - original_count
+            log_print(f"♻️[白名单同步成功] 新增{added_nodes}个节点，当前白名单总数：{new_count}")
+            broadcast_whitelist_update()  # 广播更新，让其他节点同步
 
 def clean_expired_whitelist():
     """清理过期白名单节点（每小时执行）"""
@@ -572,7 +587,7 @@ def p2p_discover_loop():
             log_print(f"[P2P清理] 移除无效节点：{addr}")
 
 def sync_missing_blocks_from_peers():
-    """区块同步（含白名单+算力校验）"""
+    """区块同步（新增：同步区块前先同步白名单）"""
     global IS_SYNCING, IS_FULLY_SYNCED
     if IS_SYNCING:
         return
@@ -583,7 +598,20 @@ def sync_missing_blocks_from_peers():
         valid_p2p_nodes = []
         invalid_ips = {"127.0.0.1", "localhost", NODE_IP}
         valid_peers = [peer for peer in P2P_PEERS if not any(ip in peer for ip in invalid_ips)]
-        # 获取有效节点和目标链高
+        
+        # 新增：第一步先同步所有有效节点的白名单
+        log_print("♻️[白名单同步] 开始同步P2P节点的白名单...")
+        for peer_main_addr in valid_peers:
+            try:
+                resp = requests.get(f"http://{peer_main_addr}/json/whitelist", timeout=10)
+                if resp.status_code == 200:
+                    remote_whitelist = resp.json()["authenticated_nodes"]
+                    if isinstance(remote_whitelist, list) and len(remote_whitelist) > 0:
+                        sync_whitelist(remote_whitelist)  # 调用同步函数更新本地白名单
+            except Exception as e:
+                log_print(f"♻️[白名单同步失败] 节点{peer_main_addr[:8]}...：{e}")
+        
+        # 原有：获取有效节点和目标链高
         for peer_main_addr in valid_peers:
             try:
                 resp = requests.get(f"http://{peer_main_addr}/json/chain_height", timeout=10)
@@ -594,10 +622,12 @@ def sync_missing_blocks_from_peers():
                     valid_p2p_nodes.append(peer_main_addr)
             except:
                 continue
+        
         if not valid_p2p_nodes:
             IS_FULLY_SYNCED = True
             log_print(f"♻️[同步完成] 无有效P2P节点，单节点模式")
             return
+    
         if p2p_max_height > local_max_height:
             log_print(f"♻️[同步] P2P最高{p2p_max_height} > 本地{local_max_height}，开始同步")
             batch_size = 10
@@ -702,38 +732,51 @@ def get_balance_from_cache(addr: str, max_height: int) -> int:
     return BALANCE_CACHE[cache_key]
 
 def miner_loop():
-    """挖矿循环线程（仅白名单节点可挖矿）"""
+    """挖矿循环线程（固定轮循，白名单节点依次出块）"""
     global IS_FULLY_SYNCED, TX_POOL
     # 启动时自动申请加入白名单
     if NODE_ADDR not in AUTHENTICATED_NODES:
         request_whitelist_join(NODE_ADDR)
+    # 初始化轮循索引（确保每次从下一个节点开始）
+    round_robin_index = 0
     while True:
         # 未同步完成/未加入白名单，不挖矿
         if not IS_FULLY_SYNCED:
             log_print(f"[等待] 同步中（本地高度{get_chain_height()}），暂不挖矿")
-            time.sleep(10)
+            time.sleep(30)
             continue
         if NODE_ADDR not in AUTHENTICATED_NODES:
             log_print(f"[等待] 未加入白名单，暂不挖矿（当前白名单节点数：{len(AUTHENTICATED_NODES)}）")
             time.sleep(30)
             request_whitelist_join(NODE_ADDR)
             continue
-        time.sleep(60)  # 每分钟尝试出块一次
+        
+        # 核心：固定顺序轮循（按白名单节点排序，依次出块）
         with QUEUE_LOCK:
-            if not GLOBAL_QUEUE:
-                GLOBAL_QUEUE.extend(AUTHENTICATED_NODES)  # 白名单节点排队挖矿
-            current_miner = GLOBAL_QUEUE[0]
-        # 当前不是本节点挖矿，等待
+            # 实时更新白名单节点列表（确保新加入节点也能参与轮循）
+            GLOBAL_QUEUE.clear()
+            # 按地址排序，保证顺序固定（避免混乱）
+            sorted_whitelist = sorted(AUTHENTICATED_NODES)
+            GLOBAL_QUEUE.extend(sorted_whitelist)
+            # 超过列表长度时重置索引
+            if round_robin_index >= len(GLOBAL_QUEUE):
+                round_robin_index = 0
+            # 获取当前轮循的挖矿节点
+            current_miner = GLOBAL_QUEUE[round_robin_index]
+        
+        # 若当前不是本节点挖矿，等待后进入下一轮
         if current_miner != NODE_ADDR:
-            log_print(f"[等待] 当前挖矿节点：{current_miner[:8]}...，本节点排队中")
+            log_print(f"[等待] 当前挖矿节点：{current_miner[:8]}...，本节点排队中（轮循顺序：{[addr[:6] for addr in GLOBAL_QUEUE]}）")
+            time.sleep(60)
             continue
-        # 计算总发行量与合法奖励
+        
+        # 原有挖矿逻辑（计算奖励、筛选交易、出块）不变
         current_supply = get_total_supply()
         block_reward = REWARD if (current_supply + REWARD) <= TOTAL_SUPPLY_LIMIT else 0
         prev_height = get_chain_height()
         prev_block = get_block_from_full_chain(prev_height) if prev_height > 0 else None
         prev_hash = hashlib.sha256(json.dumps(asdict(prev_block)).encode()).hexdigest() if prev_block else "0"*64
-        # 筛选有效交易
+        
         with TX_POOL_LOCK:
             sorted_txs = sorted(TX_POOL, key=lambda x: (x["sender"], x["nonce"]))
         valid_txs = []
@@ -743,7 +786,7 @@ def miner_loop():
             sender_bal = get_balance_from_cache(tx["sender"], prev_height)
             if sender_bal >= (tx["amount"] + FEE):
                 valid_txs.append(tx)
-        # 构建并保存区块
+        
         blk = Block(
             height=prev_height + 1,
             prev_hash=prev_hash,
@@ -752,21 +795,26 @@ def miner_loop():
             reward=block_reward
         )
         save_block_to_full_chain(blk)
-        # 广播区块到所有P2P节点
+        
+        # 广播区块+更新交易池（原有逻辑不变）
         for peer_addr in P2P_PEERS:
             try:
                 requests.post(f"http://{peer_addr}/json/submit_block", json=asdict(blk), timeout=8)
             except:
                 continue
-        # 更新挖矿队列和交易池
-        with QUEUE_LOCK:
-            GLOBAL_QUEUE.pop(0)
-            GLOBAL_QUEUE.append(current_miner)
+        
         with TX_POOL_LOCK:
             packed_hashes = {hashlib.sha256(json.dumps(tx, sort_keys=True).encode()).hexdigest() for tx in valid_txs}
             TX_POOL = [tx for tx in TX_POOL if hashlib.sha256(json.dumps(tx, sort_keys=True).encode()).hexdigest() not in packed_hashes]
-        # 打印日志
+        
         log_print(f"[合法出块] 高度#{blk.height} | 矿工{blk.miner[:8]}... | 奖励{blk.reward} | 交易数{len(valid_txs)}")
+        
+        # 出块成功后，索引+1，下一轮轮到下一个节点
+        round_robin_index += 1
+        # 给其他节点同步时间
+        time.sleep(60)
+        
+
 
 # ---------- HTTP请求处理器 ----------
 class MainHandler(http.server.BaseHTTPRequestHandler):
@@ -779,16 +827,16 @@ class MainHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(data).encode())
         except BrokenPipeError:
             pass
-
     def handle(self):
-        """请求限流+全局并发控制"""
-        # 全局并发限制
         if not GLOBAL_REQUEST_SEMAPHORE.acquire(blocking=False):
+            # 手动初始化requestline，避免日志报错
+            self.requestline = "GET / (rate limit: semaphore)"
             self.send_response(503)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "fail", "msg": "节点繁忙，请稍后重试"}).encode())
             return
+    
         try:
             # 单IP限流逻辑
             client_ip = self.client_address[0]
@@ -802,6 +850,8 @@ class MainHandler(http.server.BaseHTTPRequestHandler):
                         IP_REQUEST_COUNT[client_ip] = (1, now)
                     else:
                         if count >= REQUEST_LIMIT_PER_MINUTE:
+                            # 手动初始化requestline，避免日志报错
+                            self.requestline = f"GET / (rate limit: ip={client_ip})"
                             self.send_response(429)
                             self.send_header("Content-Type", "application/json; charset=utf-8")
                             self.end_headers()
@@ -810,8 +860,8 @@ class MainHandler(http.server.BaseHTTPRequestHandler):
                         IP_REQUEST_COUNT[client_ip] = (count + 1, last_reset)
             super().handle()
         finally:
-            GLOBAL_REQUEST_SEMAPHORE.release()
-
+            GLOBAL_REQUEST_SEMAPHORE.release()  # 释放并发锁
+          
     def do_GET(self):
         """处理GET请求"""
         # 1. 链高查询
