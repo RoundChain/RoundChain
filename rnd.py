@@ -31,7 +31,7 @@ TX_SYNC_INTERVAL = 10
 WALLET_DIR = "./rnd_wallet"  # 独立钱包目录
 ENCRYPT_KEY_FILE = f"{WALLET_DIR}/encrypt_key.key"
 CURRENT_NODE_PUBLIC_IP = "62.234.183.74"  # 节点公网IP（可修改为实际IP）
-P2P_SEEDS = ["82.157.37.13:9753"]  # 对等节点，可填写多个
+P2P_SEEDS = ["82.157.37.13:9755"]  # 对等节点，可填写多个
 MAX_TX_POOL_SIZE = 1000  # 交易池最大容量
 REQUEST_LIMIT_PER_MINUTE = 100  # 单IP每分钟最大请求数
 
