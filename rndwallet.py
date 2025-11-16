@@ -11,7 +11,7 @@ import time
 from typing import Optional, Tuple
 
 # -------------------------- 核心配置（对接你的节点） --------------------------
-NODE_API_URL = "http://62.234.183.74:9754"  # 你的节点API地址
+NODE_API_URL = "http://62.234.183.74:9755"  # 你的节点API地址
 WALLET_DIR = "./rnd_wallet"  # 钱包文件存储目录
 ENCRYPT_KEY_FILE = f"{WALLET_DIR}/encrypt_key.key"  # 加密密钥文件
 # 36位地址配置（和节点一致）
@@ -87,7 +87,7 @@ def create_new_wallet(encryptor: Fernet) -> Tuple[SigningKey, str, str]:
 def query_balance(address: str) -> Optional[int]:
     """查询地址余额（对接节点API）"""
     try:
-        response = requests.get(f"{NODE_API_URL}/json/query_balance_direct?addr={address}", timeout=10)
+        response = requests.get(f"{NODE_API_URL}/json/query_balance?addr={address}", timeout=10)
         if response.status_code == 200:
             data = response.json()
             if data["status"] == "success":
