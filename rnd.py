@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RND节点程序：多节点集群（9753/9754端口) - 无算力+动态白名单+防篡改版"""
+"""RND节点程序：多节点集群（9755/9756端口) - 无算力+动态白名单+防篡改版"""
 import json
 import time
 import hashlib
@@ -19,14 +19,14 @@ import socket
 import atexit
 
 # ---------- 节点核心配置 ----------
-PORT = 9754  # 主服务端口
+PORT = 9756  # 主服务端口
 DB_FILE = "node.db"  # 全量存储数据库
 REWARD = 1280
 TOTAL_SUPPLY_LIMIT = 12800000000
 FEE = 1
 TIMEOUT = 180
 SYNC_INTERVAL = 10
-P2P_DISCOVERY_PORT = 9753  # P2P端口
+P2P_DISCOVERY_PORT = 9755 # P2P端口
 TX_SYNC_INTERVAL = 10
 WALLET_DIR = "./rnd_wallet"  # 独立钱包目录
 ENCRYPT_KEY_FILE = f"{WALLET_DIR}/encrypt_key.key"
